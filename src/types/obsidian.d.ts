@@ -9,10 +9,18 @@ declare module 'obsidian' {
     commands: any;
   }
 
+  interface Vault {
+    getConfig: (name: string) => any;
+  }
+
   interface Workspace {
     editorSuggest: {
       suggests: EditorSuggest<any>[];
     };
+  }
+
+  interface EditorSuggest<T> {
+    type: string;
   }
 
   interface EditorSuggest<T> {

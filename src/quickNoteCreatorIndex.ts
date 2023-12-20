@@ -4,11 +4,20 @@ import {
 	EditorPosition,
 	EditorSuggest,
 	EditorSuggestContext,
-	EditorSuggestTriggerInfo, FuzzyMatch, normalizePath,
-	Plugin, prepareFuzzySearch, TAbstractFile, TFile, TFolder, Vault
+	EditorSuggestTriggerInfo,
+	FuzzyMatch,
+	normalizePath,
+	Notice,
+	Plugin,
+	prepareFuzzySearch,
+	TAbstractFile,
+	TFile,
+	TFolder,
+	Vault
 } from 'obsidian';
+import { DEFAULT_SETTINGS, QuickNoteCreatorSettings, QuickNoteCreatorSettingTab } from "./quickNoteCreatorSetting";
 
-export function resolve_tfolder(folder_str: string): TFolder {
+export function resolve_tfolder(app: App, folder_str: string): TFolder {
 	folder_str = normalizePath(folder_str);
 
 	const folder = app.vault.getAbstractFileByPath(folder_str);
@@ -22,12 +31,12 @@ export function resolve_tfolder(folder_str: string): TFolder {
 	return folder;
 }
 
-export function get_tfiles_from_folder(folder_str: string): Array<TFile> {
-	const folder = resolve_tfolder(folder_str);
+export function get_tfiles_from_folder(app: App, folder_str: string): Array<TFile> {
+	const folder = resolve_tfolder(app, folder_str);
 
 	const files: Array<TFile> = [];
 	Vault.recurseChildren(folder, (file: TAbstractFile) => {
-		if (file instanceof TFile) {
+		if (file instanceof TFile && file.extension === 'md') {
 			files.push(file);
 		}
 	});
@@ -39,8 +48,46 @@ export function get_tfiles_from_folder(folder_str: string): Array<TFile> {
 	return files;
 }
 
+export function get_active_file(app: App) {
+	return app.workspace.activeEditor?.file ?? app.workspace.getActiveFile();
+}
+
+
+export function get_folder(app: App) {
+	let folder: TFolder;
+
+	const new_file_location = app.vault.getConfig("newFileLocation");
+	switch (new_file_location) {
+		case "current": {
+			const active_file = get_active_file(app);
+			if (active_file) {
+				folder = active_file.parent ?? app.vault.getRoot();
+				return folder;
+			}
+			break;
+		}
+		case "folder":
+			folder = app.fileManager.getNewFileParent("");
+			return folder;
+		case "root":
+			folder = app.vault.getRoot();
+			return folder;
+		default:
+			break;
+	}
+
+
+}
+
 export default class QuickNoteCreatorPlugin extends Plugin {
+	settings: QuickNoteCreatorSettings;
+	settingTab: QuickNoteCreatorSettingTab;
+
 	async onload() {
+		await this.loadSettings();
+		this.settingTab = new QuickNoteCreatorSettingTab(this.app, this);
+		this.addSettingTab(this.settingTab);
+
 		this.app.workspace.onLayoutReady(()=>{
 			this.initSuggestion();
 		})
@@ -59,6 +106,14 @@ export default class QuickNoteCreatorPlugin extends Plugin {
 		} else {
 			this.app.workspace.editorSuggest.suggests.unshift(new QuickNoteCreatorSuggest(this.app, this));
 		}
+	}
+
+	public async loadSettings() {
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+	}
+
+	async saveSettings() {
+		await this.saveData(this.settings);
 	}
 }
 
@@ -104,8 +159,13 @@ export class QuickNoteCreatorSuggest extends EditorSuggest<string> {
 			}
 		])
 
-		this.templaterPlugin = this.app.plugins.getPlugin('templater-obsidian');
-		this.templater = this.templaterPlugin.templater;
+		try {
+			this.templaterPlugin = this.app.plugins.getPlugin('templater-obsidian');
+			this.templater = this.templaterPlugin.templater;
+		} catch (e) {
+			console.log(e);
+			new Notice('Templater plugin is not installed or enabled. Please install and enable it to use this plugin.')
+		}
 
 		this.scope.register(['Mod'], 'Enter', (evt) => {
 			evt.preventDefault();
@@ -124,7 +184,7 @@ export class QuickNoteCreatorSuggest extends EditorSuggest<string> {
 		// 使用 prepareFuzzySearch 来创建一个预先准备好的查询函数
 		const preparedSearch = prepareFuzzySearch(query);
 
-		const matches: FuzzyMatch<string>[] = items
+		return items
 			.map((item) => {
 				const result = preparedSearch(item);
 				if (result) {
@@ -136,13 +196,11 @@ export class QuickNoteCreatorSuggest extends EditorSuggest<string> {
 				return null;
 			})
 			.filter(Boolean) as FuzzyMatch<string>[];
-
-		return matches;
 	}
 
 	onTrigger(cursor: EditorPosition, editor: Editor): EditorSuggestTriggerInfo | null {
-		// if (!this.checkSettings()) return null;
-		this.files = get_tfiles_from_folder(this.templaterPlugin.settings.templates_folder);
+		const targetTemplatePath = this.templaterPlugin && this.plugin.settings.use_templater_templates ? this.templaterPlugin?.settings.templates_folder : this.plugin?.settings.templates_folder;
+		this.files = get_tfiles_from_folder(this.app, targetTemplatePath);
 
 		this.cursor = cursor;
 		this.editor = editor;
@@ -165,7 +223,7 @@ export class QuickNoteCreatorSuggest extends EditorSuggest<string> {
 				return {
 					start: {
 						line: currentLineNum,
-						ch: match.index,
+						ch: match.index || 0,
 					},
 					end: {
 						line: currentLineNum,
@@ -188,7 +246,9 @@ export class QuickNoteCreatorSuggest extends EditorSuggest<string> {
 			})
 
 		if(query.length === 0) {
-			return ['Create note with tag: ' + `#${context.query}`]
+			return ['Create note with tag:' + context.query.split(' ').map((tag)=> {
+				return tag.startsWith('#') ? (' ' + tag) : (' #' + tag);
+			}).join(' ')]
 		}
 
 
@@ -201,7 +261,7 @@ export class QuickNoteCreatorSuggest extends EditorSuggest<string> {
 		el.setText(value);
 	}
 
-	selectSuggestion(value: string): void {
+	async selectSuggestion(value: string): Promise<void> {
 		if (this.context) {
 			console.log(this.isModKey);
 
@@ -209,7 +269,11 @@ export class QuickNoteCreatorSuggest extends EditorSuggest<string> {
 			const start = this.context.start;
 			const end = this.context.end;
 
-			let targetValue = this.isShiftKey || value.contains(':') ? `---\ntags: \n  - ${this.context.query}\n---\n` : `${this.context.query}`;
+			let targetValue = this.isShiftKey || value.contains(':') ? `---\ntags: \n${
+				this.context.query.split(' ').map((tag) => {
+					return tag.startsWith('#') ? ('  - ' + tag) : ('  - ' + tag);
+				}).join('\n')
+			}\n---\n` : `${this.context.query}`;
 
 			editor.transaction({
 				changes: [
@@ -225,7 +289,20 @@ export class QuickNoteCreatorSuggest extends EditorSuggest<string> {
 			});
 
 			const file = this.isShiftKey || value.contains(':') ? '' : this.files.find((file) => file.basename === value);
-			this.templater.create_new_note_from_template(file || targetValue, undefined, this.beforeDollarText, this.isModKey);
+			if (this.templater) this.templater.create_new_note_from_template(file || targetValue, undefined, this.beforeDollarText, this.isModKey);
+			else {
+				new Notice('Templater plugin is not installed or enabled. Please install and enable it to use this plugin.')
+				const template = file instanceof TFile ? await this.app.vault.read(file) : '';
+
+				const folder = get_folder(this.app);
+				const path = (folder?.path || '') + '/' + this.beforeDollarText + '.md';
+				const newFile = await this.app.vault.create(path, targetValue + template);
+				if(newFile) {
+					if(this.isModKey) {
+						this.app.workspace.openLinkText(newFile.path, '', true);
+					}
+				}
+			}
 
 			this.isModKey = false;
 			this.isShiftKey = false;

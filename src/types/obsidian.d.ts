@@ -1,5 +1,5 @@
 import 'obsidian';
-import { Modifier } from "obsidian";
+import { Modifier, PopoverSuggest } from "obsidian";
 
 declare module 'obsidian' {
     interface App {
@@ -28,6 +28,7 @@ declare module 'obsidian' {
     interface EditorSuggest<T> {
         type: string;
     }
+
 
     interface EditorSuggest<T> {
         suggestions: any;

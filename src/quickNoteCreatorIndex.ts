@@ -1,4 +1,5 @@
 import {
+    AbstractInputSuggest,
     App,
     CustomScope,
     Editor,
@@ -14,14 +15,19 @@ import {
 } from 'obsidian';
 import { DEFAULT_SETTINGS, QuickNoteCreatorSettings, QuickNoteCreatorSettingTab } from "./quickNoteCreatorSetting";
 import { get_folder, get_tfiles_from_folder } from "./utils";
+import { around } from "monkey-around";
 
 export default class QuickNoteCreatorPlugin extends Plugin {
     settings: QuickNoteCreatorSettings;
     settingTab: QuickNoteCreatorSettingTab;
 
+    patchTarget: any;
+    hasLoaded: boolean = false;
+
     async onload() {
 
         this.patchSuggestions();
+        this.patchFrontMatterSuggestions();
         await this.loadSettings();
         this.settingTab = new QuickNoteCreatorSettingTab(this.app, this);
         this.addSettingTab(this.settingTab);
@@ -33,7 +39,7 @@ export default class QuickNoteCreatorPlugin extends Plugin {
     }
 
     onunload() {
-
+        console.log('unloading plugin');
     }
 
     /**
@@ -44,7 +50,6 @@ export default class QuickNoteCreatorPlugin extends Plugin {
      */
     initSuggestion() {
         const existed = this.app.workspace.editorSuggest.suggests.findIndex((suggest) => suggest.type === 'quick-add-tag');
-        console.log(this.app.workspace.editorSuggest.suggests);
         if (existed !== -1) {
             this.app.workspace.editorSuggest.suggests.splice(existed, 1);
             this.app.workspace.editorSuggest.suggests.unshift(new QuickNoteCreatorSuggest(this.app, this));
@@ -82,6 +87,298 @@ export default class QuickNoteCreatorPlugin extends Plugin {
                 text: 'to create a Templater note',
             });
         }
+    }
+
+    patchFrontMatterSuggestions() {
+        const alreadyGetPatchTarget = () => {
+            return this.patchTarget !== undefined;
+        }
+
+        const hasLoaded = () => {
+            return this.hasLoaded;
+        }
+
+        const triggerLoaded = () => {
+            this.hasLoaded = true;
+        }
+
+        const getPlugin = () => {
+            return this;
+        }
+
+        const addInstruction = (suggestEl: HTMLElement) => {
+            const instructionsEl = (suggestEl as HTMLElement).find('.prompt-instructions');
+            const customInstructionEl = instructionsEl.find('.custom-instruction');
+            if (customInstructionEl) return;
+
+            const instructionEl = instructionsEl.createDiv({
+                cls: 'prompt-instruction custom-instruction',
+            });
+            instructionEl.createSpan({
+                cls: 'prompt-instruction-command',
+                text: 'Type $'
+            });
+            instructionEl.createSpan({
+                text: 'to create a Templater note',
+            });
+        }
+
+        const setPatchTarget = (patchTarget: any) => {
+            this.patchTarget = patchTarget;
+
+            around(patchTarget.constructor.prototype, {
+                getSuggestions: (next) => {
+                    return function (args: string) {
+                        if(!hasLoaded()) {
+                            this.plugin = getPlugin();
+                            try {
+                                this.templaterPlugin = this.app.plugins.getPlugin('templater-obsidian');
+                                this.templater = this.templaterPlugin.templater;
+                            } catch (e) {
+                                console.log(e);
+                                new Notice('Templater plugin is not installed or enabled. Please install and enable it to use this plugin.');
+                            }
+
+                            this.type = 'quick-add-tag';
+
+                            this.afterDollarText = '';
+                            this.beforeDollarText = '';
+                            this.betwennDollarAndHeadingText = '';
+
+                            this.hasDoubleBrackets = false;
+
+                            this.isModKey = false;
+                            this.isShiftKey = false;
+
+                            this.isDollarKey = false;
+                            this.isHeadingKey = false;
+                            this.isBlockKey = false;
+                            this.isLineKey = false;
+
+                            this.files = [];
+
+                            triggerLoaded();
+                        }
+
+                        console.log(args);
+
+                        // check if this start with `[[`
+                        if(args.startsWith('[[')) {
+                            if(this.suggestEl) addInstruction(this.suggestEl);
+
+                            const targetTemplatePath = this.templaterPlugin && this.plugin.settings.use_templater_templates ? this.templaterPlugin?.settings.templates_folder : this.plugin?.settings.templates_folder;
+                            if(targetTemplatePath) this.files = get_tfiles_from_folder(this.app, targetTemplatePath);
+
+                            const CUSTOM_TAG_REGEX = /\[\[([^\[\]]+)/
+                            const match = args.match(CUSTOM_TAG_REGEX);
+                            if(match) {
+                                const matchedText = match[1];
+                                const dollarIndex = matchedText.indexOf('$');
+                                this.isDollarKey = dollarIndex !== -1;
+                                if (dollarIndex !== -1) {
+                                    this.afterDollarText = matchedText.slice(dollarIndex + 1);
+                                    this.beforeDollarText = matchedText.slice(0, dollarIndex);
+
+                                    const textAfterCursor = args.slice(dollarIndex || 0);
+                                    this.hasDoubleBrackets = textAfterCursor.indexOf(']]') !== -1;
+
+                                    return this.calculateSuggestions(this.afterDollarText);
+                                }
+                            }
+                        }
+
+
+                        const result = next.call(this, args);
+
+                        return result;
+                    }
+                },
+                selectSuggestion: (next) => {
+                    return async function (...args: any) {
+                        if (typeof args[0] === 'string') {
+                            const shouldBuildTags = this.isShiftKey || args.includes(':');
+                            const shouldUseFile = !shouldBuildTags;
+                            const shouldCreateNote = !this.templater;
+                            const shouldAddFormatting = (this.getFormattingFlags()) && !this.isModKey;
+
+                            const tagValue = this.buildTagValue(args);
+                            const targetValue = shouldBuildTags ? `---\ntags:\n${tagValue}\n---\n` : args;
+
+                            this.insertClosingBracketsIfNeeded(args);
+
+                            const selectedFile = shouldUseFile ? this.findFileByName(args) : '';
+                            await this.processTemplate(selectedFile, targetValue);
+
+                            // if (shouldAddFormatting) {
+                            //     this.formatAndSetSelection(editor, start);
+                            // }
+
+                            this.resetFlags();
+                            this.close();
+
+                            return ;
+                        }
+
+                        const result = next.call(this, ...args);
+                        return result;
+                    }
+                },
+                renderSuggestion: (next)=> {
+                    return function (...args: any) {
+                        if(typeof args[0] === 'string') {
+                            (args[1] as HTMLElement).setText(args[0]);
+                            return;
+                        }
+
+                        const result = next.call(this, ...args);
+                        return result;
+                    }
+                },
+                calculateSuggestions: (next) => {
+                    return function (queryString: string) {
+                        const names = this.files.map((file: TFile) => file.basename);
+
+                        const query = this.fuzzySearchItemsOptimized(queryString, names)
+                            .map((match: FuzzyMatch<string>) => match.item)
+                            .sort((a: string, b: string) => {
+                                return a.localeCompare(b);
+                            });
+
+                        if (query.length === 0) {
+                            return ['Create note with tag:' + queryString.trim().split(' ').map((tag) => {
+                                return tag.startsWith('#') ? (' ' + tag) : (' #' + tag);
+                            }).join(' ')];
+                        }
+
+                        return (
+                            query
+                        );
+                    }
+                },
+                fuzzySearchItemsOptimized: (next) => {
+                    return function (query: string, items: string[]): FuzzyMatch<string>[] {
+                        const preparedSearch = prepareFuzzySearch(query);
+
+                        return items
+                            .map((item) => {
+                                const result = preparedSearch(item);
+                                if (result) {
+                                    return {
+                                        item: item,
+                                        match: result,
+                                    };
+                                }
+                                return null;
+                            })
+                            .filter(Boolean) as FuzzyMatch<string>[];
+                    }
+                },
+                buildTagValue: (next) => {
+                    return function (query: string): string {
+                        return query.trim().split(' ').map(tag => `  - ${tag}`).join('\n');
+                    }
+                },
+                insertClosingBracketsIfNeeded: (next) => {
+                    return function (query: string) {
+                        this.setValue('[[' + this.beforeDollarText + ']]');
+                    }
+                },
+                showNoticeIfTemplaterNotInstalled: (next) => {
+                    return function () {
+                        new Notice(
+                            'Templater plugin is not installed or enabled. Please install and enable it to use this plugin.'
+                        );
+                    }
+                },
+                processTemplate: (next) => {
+                    return async function (file: TFile | string, targetValue: string) {
+                        if (this.templater) {
+                            this.templater.create_new_note_from_template(file || targetValue, undefined, this.beforeDollarText, this.isModKey);
+                            return;
+                        }
+
+                        this.showNoticeIfTemplaterNotInstalled();
+                        const template = file instanceof TFile ? await this.app.vault.read(file) : '';
+                        const newFile = await this.createNewNoteFromTemplate(template, targetValue);
+
+                        if (this.isModKey && newFile) {
+                            this.openLinkForNewFile(newFile);
+                        }
+                    }
+                },
+                findFileByName: (next) => {
+                    return function (value: string): TFile | string {
+                        return this.files.find((file: TFile) => file.basename === value) ?? '';
+                    }
+                },
+                createNewNoteFromTemplate: (next) => {
+                    return async function (template: string, targetValue: string) {
+                        const folder = get_folder(this.app);
+                        const path = `${folder?.path ?? ''}/${this.beforeDollarText}.md`;
+                        return await this.app.vault.create(path, targetValue + template);
+                    }
+                },
+                openLinkForNewFile: (next) => {
+                    return async function (newFile: TFile) {
+                        await this.app.workspace.openLinkText(newFile.path, '', true);
+                    }
+                },
+                formatAndSetSelection: (next) => {
+                    return function (editor: Editor, start: EditorPosition) {
+                        const insertText = this.getInsertText();
+                        const insertLength = this.isBlockKey ? 2 : 1;
+                        setTimeout(() => {
+                            this.resetFormattingFlags();
+                        }, 200);
+                    }
+                },
+                getInsertText: (next) => {
+                    return function () {
+                        if (this.isHeadingKey) return '#';
+                        if (this.isLineKey) return '|';
+                        if (this.isBlockKey) return '#^';
+                        return '';
+                    }
+                },
+                getFormattingFlags: (next) => {
+                    return function () {
+                        return this.isHeadingKey || this.isLineKey || this.isBlockKey;
+                    }
+                },
+                resetFormattingFlags: (next) => {
+                    return function () {
+                        this.isBlockKey = false;
+                        this.isLineKey = false;
+                        this.isHeadingKey = false;
+                    }
+                },
+                resetFlags: (next) => {
+                    return function () {
+                        this.isModKey = false;
+                        this.isShiftKey = false;
+                    }
+                },
+                focusEditorAfterDelay: (next) => {
+                    return function (editor: Editor) {
+                        setTimeout(() => editor.focus());
+                    }
+                }
+            })
+
+        }
+
+        around(AbstractInputSuggest.prototype as any, {
+            showSuggestions: (next) => {
+                return function (args: any) {
+                    if(!alreadyGetPatchTarget()) {
+                        setPatchTarget(this);
+                    }
+                    const result = next.call(this, args);
+
+                    return result;
+                }
+            },
+        })
     }
 
 
@@ -124,16 +421,20 @@ export class QuickNoteCreatorSuggest extends EditorSuggest<string> {
     readonly CUSTOM_TAG_REGEX = /\[\[([^\[\]]+)/;
     readonly CUSTOM_INSTRUCTION = [
         {
-            command: 'Enter',
+            command: 'Type ↩',
             purpose: 'to create a Templater note'
         },
         {
-            command: 'Ctrl+Enter',
-            purpose: 'to create a Templater note and open it'
+            command: 'Type ⌘ + ↩',
+            purpose: 'to create and open'
         },
         {
-            command: 'Shift+Enter',
-            purpose: 'to create note with current input as tag'
+            command: 'Type ⇧ + ↩',
+            purpose: 'to create with value as tag'
+        },
+        {
+            command: 'Type #/^/|',
+            purpose: 'to add heading/block/alias link'
         }
     ];
 
@@ -315,7 +616,6 @@ export class QuickNoteCreatorSuggest extends EditorSuggest<string> {
     }
 
     private insertClosingBracketsIfNeeded(editor: Editor, start: EditorPosition, end: EditorPosition, query: string) {
-        console.log(query, start, end);
         editor.transaction({
             changes: [{
                 from: {line: start.line, ch: end.ch - query.length - 1},

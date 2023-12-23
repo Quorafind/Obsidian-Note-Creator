@@ -160,8 +160,6 @@ export default class QuickNoteCreatorPlugin extends Plugin {
                             triggerLoaded();
                         }
 
-                        console.log(args);
-
                         // check if this start with `[[`
                         if(args.startsWith('[[')) {
                             if(this.suggestEl) addInstruction(this.suggestEl);
@@ -196,17 +194,18 @@ export default class QuickNoteCreatorPlugin extends Plugin {
                 selectSuggestion: (next) => {
                     return async function (...args: any) {
                         if (typeof args[0] === 'string') {
-                            const shouldBuildTags = this.isShiftKey || args.includes(':');
+                            const value = args[0];
+                            const shouldBuildTags = this.isShiftKey || value.includes(':');
                             const shouldUseFile = !shouldBuildTags;
                             const shouldCreateNote = !this.templater;
                             const shouldAddFormatting = (this.getFormattingFlags()) && !this.isModKey;
 
-                            const tagValue = this.buildTagValue(args);
-                            const targetValue = shouldBuildTags ? `---\ntags:\n${tagValue}\n---\n` : args;
+                            const tagValue = this.buildTagValue(value);
+                            const targetValue = shouldBuildTags ? `---\ntags:\n${tagValue}\n---\n` : value;
 
-                            this.insertClosingBracketsIfNeeded(args);
+                            this.insertClosingBracketsIfNeeded(value);
 
-                            const selectedFile = shouldUseFile ? this.findFileByName(args) : '';
+                            const selectedFile = shouldUseFile ? this.findFileByName(value) : '';
                             await this.processTemplate(selectedFile, targetValue);
 
                             // if (shouldAddFormatting) {

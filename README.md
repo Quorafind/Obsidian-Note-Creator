@@ -3,6 +3,8 @@
 > [!note]
 > This plugin was developed on behalf of [@sarah_a_bentley](https://twitter.com/Sarah_A_Bentley), and I am very grateful
 > that she was willing to sponsor this plugin and allow me open source it to the community.
+> <br>
+> If you are enjoy using Obsidian-Note-Creator, you can say thank you to her too.
 
 ## Basic Usage
 

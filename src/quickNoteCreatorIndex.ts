@@ -126,22 +126,6 @@ export default class QuickNoteCreatorPlugin extends Plugin {
 		const setPatchTarget = (patchTarget: any) => {
 			this.patchTarget = patchTarget;
 
-			// Change the default behavior of tab/arrowup/arrowdown
-
-			// const originalTabKey = this.patchTarget.scope.keys.find((key: any) => key.key === 'Tab');
-			// const originalArrowUpKey = this.patchTarget.scope.keys.find((key: any) => key.key === 'ArrowUp');
-			// const originalArrowDownKey = this.patchTarget.scope.keys.find((key: any) => key.key === 'ArrowDown');
-			//
-			// // Swap arrow up and arrow down to tab and shift tab
-			// originalArrowDownKey.key = 'Tab';
-			// originalArrowDownKey.modifiers = '';
-			//
-			// originalArrowUpKey.key = 'Tab';
-			// originalArrowUpKey.modifiers = 'Shift';
-			//
-			// // Remove tab key
-			// this.patchTarget.scope.keys.splice(this.patchTarget.scope.keys.indexOf(originalTabKey), 1);
-
 			around(patchTarget.constructor.prototype, {
 				getSuggestions: (next) => {
 					return function (args: string) {
